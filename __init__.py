@@ -141,7 +141,7 @@ class ContainerChallenge(BaseChallenge):
 
         # 3) Check if container is actually running
         from . import container_manager
-        if not container_manager:# or not container_manager.is_container_running(container_info.container_id):
+        if not container_manager or not container_manager.is_container_running(container_info.container_id):
             return False, "Your container is not running; you cannot submit yet."
 
         # Validate the flag belongs to the user/team
