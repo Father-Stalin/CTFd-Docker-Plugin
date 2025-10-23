@@ -20,6 +20,29 @@ USERS_MODE = settings["modes"]["USERS_MODE"]
 TEAMS_MODE = settings["modes"]["TEAMS_MODE"]
 
 
+def cleanup_container_records(container_info):
+    """
+    Remove or detach flag records tied to a container that is being cleaned up.
+    """
+    if container_info is None:
+        return
+
+    challenge = container_info.challenge
+    used_flags = ContainerFlagModel.query.filter_by(
+        container_id=container_info.container_id
+    ).all()
+
+    if challenge and challenge.flag_mode == "static":
+        for flag in used_flags:
+            db.session.delete(flag)
+    else:
+        for flag in used_flags:
+            if flag.used:
+                flag.container_id = None
+            else:
+                db.session.delete(flag)
+
+
 def settings_to_dict(settings):
     """Convert settings table records into a dictionary"""
     return {setting.key: setting.value for setting in settings}
@@ -38,17 +61,21 @@ def kill_container(container_manager, container_id):
     if not container:
         return jsonify({"error": "Container not found"}), 400
 
+    warning_message = None
+
     try:
         container_manager.kill_container(container_id)
-    except ContainerException:
-        return jsonify(
-            {"error": "Docker is not initialized. Please check your settings."}
-        )
+    except ContainerException as err:
+        warning_message = str(err).strip() or "Docker is not initialized. Please check your settings."
+        cleanup_container_records(container)
 
     db.session.delete(container)
     db.session.commit()
 
-    return jsonify({"success": "Container killed"})
+    response = {"success": "Container killed"}
+    if warning_message:
+        response["warning"] = warning_message
+    return jsonify(response)
 
 
 def renew_container(container_manager, chal_id, xid, is_team):

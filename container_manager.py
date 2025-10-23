@@ -274,36 +274,69 @@ class ContainerManager:
 
     @run_command
     def kill_container(self, container_id: str):
+        docker_container = None
+
+        # Try to inspect the container; it may already be gone.
         try:
-            self.client.containers.get(container_id).kill()
-
-            container_info = ContainerInfoModel.query.filter_by(
-                container_id=container_id
-            ).first()
-            if not container_info:
-                return  # No matching record => nothing else to do
-
-            challenge = container_info.challenge
-
-            used_flags = ContainerFlagModel.query.filter_by(
-                container_id=container_id
-            ).all()
-
-            if challenge.flag_mode == "static":
-                # Remove all flags for static-mode challenges (ignore used or not used)
-                for f in used_flags:
-                    db.session.delete(f)
-            else:
-                for f in used_flags:
-                    if f.used:
-                        # Keep this flag, but remove its container reference
-                        f.container_id = None
-                    else:
-                        # If the flag wasn't used, delete it
-                        db.session.delete(f)
-
+            docker_container = self.client.containers.get(container_id)
         except docker.errors.NotFound:
-            pass
+            docker_container = None
+        except docker.errors.APIError as e:
+            status_code = getattr(e, "status_code", None)
+            explanation = getattr(e, "explanation", "") or str(e)
+            if status_code == 404 or "not found" in explanation.lower():
+                docker_container = None
+            else:
+                raise ContainerException(
+                    f"Failed to inspect container {container_id}: {explanation}"
+                )
+
+        if docker_container is not None:
+            try:
+                docker_container.kill()
+            except docker.errors.APIError as e:
+                status_code = getattr(e, "status_code", None)
+                explanation = getattr(e, "explanation", "") or str(e)
+                explanation_lower = explanation.lower()
+
+                # Treat "already gone/not running" responses as non-fatal.
+                if (
+                    status_code in (404, 409)
+                    or "not running" in explanation_lower
+                    or "not found" in explanation_lower
+                ):
+                    pass
+                else:
+                    raise ContainerException(
+                        f"Failed to kill container {container_id}: {explanation}"
+                    )
+            except docker.errors.NotFound:
+                pass
+
+        container_info = ContainerInfoModel.query.filter_by(
+            container_id=container_id
+        ).first()
+        if not container_info:
+            return
+
+        challenge = container_info.challenge
+
+        used_flags = ContainerFlagModel.query.filter_by(
+            container_id=container_id
+        ).all()
+
+        if challenge and challenge.flag_mode == "static":
+            # Remove all flags for static-mode challenges (ignore used or not used)
+            for f in used_flags:
+                db.session.delete(f)
+        else:
+            for f in used_flags:
+                if f.used:
+                    # Keep this flag, but remove its container reference
+                    f.container_id = None
+                else:
+                    # If the flag wasn't used, delete it
+                    db.session.delete(f)
 
     def is_connected(self) -> bool:
         try:

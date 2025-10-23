@@ -140,18 +140,26 @@ def route_purge_containers():
             return {"error": "No containers selected"}, 400
 
         deleted_count = 0
+        warnings = []
         for container_id in container_ids:
             container = ContainerInfoModel.query.filter_by(container_id=container_id).first()
             if container:
+                warning_message = None
                 try:
                     container_manager.kill_container(container_id)
-                    db.session.delete(container)
-                    deleted_count += 1
-                except ContainerException:
-                    continue
+                except ContainerException as err:
+                    warning_message = str(err).strip() or "Docker communication failed"
+                    cleanup_container_records(container)
+                db.session.delete(container)
+                deleted_count += 1
+                if warning_message:
+                    warnings.append(f"{container_id[:12]}: {warning_message}")
 
         db.session.commit()
-        return {"success": f"Deleted {deleted_count} container(s)"}
+        response = {"success": f"Deleted {deleted_count} container(s)"}
+        if warnings:
+            response["warnings"] = warnings
+        return response
     except ValueError as err:
         return {"error": str(err)}, 400
         
